@@ -1,0 +1,10 @@
+services:
+  greenhouse-scraper:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      # Optional — Greenhouse's job board API has no bot protection, so leave this unset.
+      # - GREENHOUSE_PROXY=http://user:pass@host:port

@@ -1,0 +1,43 @@
+# /greenhouse/* — every public job board hosted by the Greenhouse ATS.
+# Run the service: SCRAPERS_PORT=6071 ONLY_SCRAPER=greenhouse python run.py
+@base = http://127.0.0.1:6071
+
+### Board profile: name, intro, counts, top departments / locations
+GET {{base}}/greenhouse/boards/details?board=stripe
+
+### Board by link
+GET {{base}}/greenhouse/boards/details?board=https://job-boards.greenhouse.io/anthropic
+
+### Jobs on a board, filtered + paged
+GET {{base}}/greenhouse/boards/jobs?board=stripe&query=engineer&location=remote&per_page=20&page=1
+
+### Jobs with every filter
+GET {{base}}/greenhouse/boards/jobs?board=cloudflare&department=Engineering&workplace_type=hybrid&seniority=senior&posted_since=30d&has_salary=true&min_salary=150000&sort=updated&include_description=true
+
+### One job (pay ranges included) by id, by Greenhouse link or by a careers-page link
+GET {{base}}/greenhouse/jobs/details?job=5813967004
+GET {{base}}/greenhouse/jobs/details?job=https://job-boards.greenhouse.io/figma/jobs/5813967004
+GET {{base}}/greenhouse/jobs/details?job=https://stripe.com/jobs/search?gh_jid=8172510
+
+### Application form: questions, EEOC + demographic sections
+GET {{base}}/greenhouse/jobs/application-form?job=https://stripe.com/jobs/search?gh_jid=8172510
+
+### Department / office trees (list or tree, with the jobs on request)
+GET {{base}}/greenhouse/boards/departments?board=figma&render_as=tree
+GET {{base}}/greenhouse/boards/offices?board=figma&render_as=tree&include_jobs=true
+
+### Prospect-post sections
+GET {{base}}/greenhouse/boards/sections?board=figma
+
+### Jobs opened / updated / closed since a moment
+GET {{base}}/greenhouse/boards/changes?board=vercel&since=7d
+
+### Search across up to 10 boards
+GET {{base}}/greenhouse/jobs/search?boards=stripe,figma,vercel,anthropic&query=product%20manager&workplace_type=remote&per_page=25
+
+### Find a company's board from a name, domain or careers link
+GET {{base}}/greenhouse/boards/resolve?company=Datadog
+GET {{base}}/greenhouse/boards/resolve?company=stripe.com
+
+### Education lookups (degrees / disciplines / schools)
+GET {{base}}/greenhouse/boards/education?board=figma&type=schools&query=stanford
