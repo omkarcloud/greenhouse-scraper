@@ -86,6 +86,12 @@ class OptionalText(StrippedString):
         kwargs.setdefault("validate", validate.Length(min=1, max=max_length))
         super().__init__(**kwargs)
 
+    def _validate(self, value):
+        # StrippedString turns a blank value into None (= not given); the
+        # Length validator must not see it (len(None) is a TypeError -> 500)
+        if value is not None:
+            super()._validate(value)
+
 
 class JobFiltersSchema(BaseSchema):
     """The filters, sort and paging every job listing takes."""

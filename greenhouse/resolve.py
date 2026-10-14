@@ -26,7 +26,7 @@ _SUFFIXES = ("inc", "incorporated", "llc", "ltd", "limited", "corp", "corporatio
 _DOMAIN_PREFIXES = ("get", "try", "go", "hello", "use", "join", "with", "my", "the", "meet", "www")
 _DOMAIN_SUFFIXES = ("hq", "app", "io", "ai", "labs", "inc", "co", "tech", "careers", "jobs")
 _MARKER_RE = re.compile(
-    r"(?:job-)?boards(?:-api)?\.greenhouse\.io/(?:v1/boards/|embed/job_(?:board|app)/?\?(?:[^\"'\s]*&)?for=)?"
+    r"(?:job-)?boards(?:-api)?\.greenhouse\.io/(?:v1/boards/|embed/job_(?:board|app)(?:/js)?/?\?(?:[^\"'\s]*&(?:amp;)?)?for=)?"
     r"([A-Za-z0-9_-]{1,100})", re.I)
 _PATHS = ("/careers", "/jobs", "/careers/", "/careers/jobs", "/company/careers", "/about/careers", "/join-us",
           "/join", "/")
