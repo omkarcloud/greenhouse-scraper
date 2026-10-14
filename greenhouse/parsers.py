@@ -266,12 +266,18 @@ def pay_range(raw):
     if lo is None and hi is None:
         return None
     title = text(raw.get("title"))
+    lo_major = lo / 100 if lo is not None else None
+    hi_major = hi / 100 if hi is not None else None
+    # the title names the period when it can ("Annual Salary", "Hourly
+    # Range"); a bare "Pay Range" falls back to the amount (>= 10,000 yearly)
     period = _period(title or "", None, None)
     if period is None and title:
         period = "hourly" if _HOURLY_RE.search(title) else ("yearly" if re.search(r"annual|year|salary", title, re.I) else None)
+    if period is None:
+        period = _period("", lo_major, hi_major if hi_major is not None else lo_major)
     return {"title": title.rstrip(":").strip() if title else None,
-            "min": _amount(lo / 100) if lo is not None else None,
-            "max": _amount(hi / 100) if hi is not None else None,
+            "min": _amount(lo_major),
+            "max": _amount(hi_major),
             "currency": text(raw.get("currency_type")), "period": period, "note": to_text(raw.get("blurb"))}
 
 

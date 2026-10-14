@@ -153,6 +153,13 @@ def test_salary_from_text_rejects(text):
     assert P.salary_from_text(text) is None
 
 
+def test_pay_range_period():
+    assert P.pay_range({"min_cents": 21200000, "max_cents": 26500000, "currency_type": "USD", "title": "Pay Range"})["period"] == "yearly"
+    assert P.pay_range({"min_cents": 4500, "max_cents": 6000, "currency_type": "USD", "title": "Pay Range"})["period"] == "hourly"
+    assert P.pay_range({"min_cents": 4500, "max_cents": 6000, "currency_type": "USD", "title": "Annual Salary"})["period"] == "yearly"
+    assert P.pay_range({"title": "Pay Range"}) is None
+
+
 def test_metadata():
     items = P.metadata_items([
         {"id": 1, "name": "Pay Transparency Range", "value_type": "currency_range",
