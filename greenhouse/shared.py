@@ -1,70 +1,19 @@
-"""Small value and transport helpers the greenhouse package needs, kept in
-the package so it stands alone (the open-source Greenhouse Scraper ships
-this folder verbatim). Pure functions plus a tiny in-process memo; every
-helper tolerates None and junk."""
+"""Small value and transport helpers the greenhouse package needs, kept in the package
+so it needs nothing from another site (the open-source Greenhouse Scraper ships this
+folder verbatim). Pure functions plus a tiny in-process memo; every helper tolerates
+None and junk."""
 import html as html_lib
 import re
 import threading
 import time
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
-
-
-# ---- safe access ---------------------------------------------------------------------------
-
-def g(obj, *path, default=None):
-    """Safe nested get: g(d, "a", "b", 0) -> d["a"]["b"][0] or default."""
-    for step in path:
-        if isinstance(step, int):
-            if not isinstance(obj, list) or not -len(obj) <= step < len(obj):
-                return default
-            obj = obj[step]
-        else:
-            if not isinstance(obj, dict):
-                return default
-            obj = obj.get(step)
-        if obj is None:
-            return default
-    return obj
-
-
-def as_list(value):
-    return value if isinstance(value, list) else []
-
-
-def as_dict(value):
-    return value if isinstance(value, dict) else {}
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as wait_futures
+from scraper_utils.values import as_dict, as_list, g, num, to_int_round as to_int
+from scraper_utils.text import clean as text
+from scraper_utils import fanout, memo
 
 
 # ---- numbers / text --------------------------------------------------------------------------
-
-def num(value):
-    """int / float / numeric string ('1,234.5') -> float; bool, junk, NaN -> None."""
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value) if value == value else None
-    try:
-        out = float(str(value).strip().replace(",", ""))
-    except ValueError:
-        return None
-    return out if out == out else None
-
-
-def to_int(value):
-    out = num(value)
-    return int(round(out)) if out is not None else None
-
-
-def text(value):
-    """Whitespace-collapsed, HTML-unescaped string; '' -> None. Accepts
-    {"text": ...} wrappers."""
-    if isinstance(value, dict):
-        value = value.get("text")
-    if value is None:
-        return None
-    out = " ".join(html_lib.unescape(str(value)).replace("\xa0", " ").split())
-    return out or None
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -106,29 +55,6 @@ def is_challenged(status, headers, body):
     return status in (403, 429, 503) and any(m in head for m in CF_MARKERS)
 
 
-def click_turnstile(page):
-    """Real mouse click on the Cloudflare Turnstile checkbox, when shown."""
-    import random
-    for frame in page.frames:
-        if not frame.url.startswith("https://challenges.cloudflare.com"):
-            continue
-        try:
-            box = frame.frame_element().bounding_box()
-        except Exception:
-            box = None
-        if not box or box.get("width", 0) < 50:
-            continue
-        x = box["x"] + box["width"] / 9 + random.uniform(-4, 4)
-        y = box["y"] + box["height"] / 2 + random.uniform(-4, 4)
-        page.mouse.move(x, y, steps=random.randint(10, 25))
-        page.wait_for_timeout(random.randint(100, 300))
-        page.mouse.down()
-        page.wait_for_timeout(random.randint(50, 150))
-        page.mouse.up()
-        return True
-    return False
-
-
 _memo = OrderedDict()
 _memo_lock = threading.Lock()
 MEMO_TTL = 600
@@ -137,19 +63,25 @@ MEMO_MAX = 256
 
 def memoized(key, fn, ttl=MEMO_TTL):
     """fn() memoised in-process for `ttl` seconds under `key`."""
-    now = time.monotonic()
-    with _memo_lock:
-        hit = _memo.get(key)
-        if hit and now - hit[0] < ttl:
-            _memo.move_to_end(key)
-            return hit[1]
-    value = fn()
-    with _memo_lock:
-        _memo[key] = (now, value)
-        _memo.move_to_end(key)
-        while len(_memo) > MEMO_MAX:
-            _memo.popitem(last=False)
-    return value
+    return memo.memoized(_memo, _memo_lock, MEMO_MAX, key, fn, ttl)
+
+
+# Long-lived pools (2026-10-23): their threads keep their thread-local curl
+# sessions — and the sticky exits behind them — between requests. The
+# per-call executor they replace opened fresh sessions/exits for every
+# fan-out and threw them away when the call returned. Two levels: a fan-out
+# running inside a fan-out goes to the second pool, so it neither waits on
+# the workers it occupies (deadlock) nor loses its parallelism; a third
+# level runs inline.
+_pools = (ThreadPoolExecutor(max_workers=24, thread_name_prefix="greenhouse-fanout-0"),
+          ThreadPoolExecutor(max_workers=24, thread_name_prefix="greenhouse-fanout-1"))
+
+
+def _windowed(fns, workers):
+    """Run `fns` on the pool for this nesting level, at most `workers` at a
+    time; results align with `fns`. The first failure (in `fns` order)
+    propagates once the callables already started have finished."""
+    return fanout.windowed(_pools, "greenhouse-fanout", fns, workers)
 
 
 def run_parallel(fns, workers):
@@ -162,5 +94,4 @@ def run_parallel(fns, workers):
             return ("error", e)
     if not fns:
         return []
-    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(fns)))) as ex:
-        return list(ex.map(guard, fns))
+    return _windowed([lambda fn=fn: guard(fn) for fn in fns], max(1, workers))

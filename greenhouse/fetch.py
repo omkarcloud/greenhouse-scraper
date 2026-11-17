@@ -19,9 +19,8 @@ Surfaces:
                              header names the board a bare job id belongs to
                              (the API itself needs the board in the path).
   page(url)                  a company's own careers page (board discovery):
-                             Chrome-TLS curl_cffi; when Cloudflare challenges
-                             it, one headful patchright Chrome loads it and
-                             hands back the rendered HTML.
+                             Chrome-TLS curl_cffi; a Cloudflare challenge
+                             raises GreenhouseBlocked (resolve skips the page).
 
 Failure taxonomy (scraper_errors, mapped to HTTP by route_glue):
   GreenhouseUpstreamError  transport failure / 5xx / unexpected body — retryable
@@ -30,6 +29,7 @@ Failure taxonomy (scraper_errors, mapped to HTTP by route_glue):
   GreenhouseNotFound       no such board / job                        — never retried
 """
 import json
+import fastjson
 import os
 import re
 import sys
@@ -41,17 +41,19 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
+import egress
 from scraper_errors import BadRequest, Blocked, NotFound, UpstreamError
-from greenhouse.shared import click_turnstile, is_challenged, memoized, run_parallel  # noqa: F401  (re-exported)
+from greenhouse.shared import is_challenged, memoized, run_parallel  # noqa: F401  (re-exported)
+from scraper_utils import debug, sessions
 
 API_BASE = "https://boards-api.greenhouse.io/v1/boards/"
 EMBED_JOB_APP = "https://boards.greenhouse.io/embed/job_app"
 BOARD_SITE = "https://job-boards.greenhouse.io"
 TIMEOUT = (10, 90)             # (connect, read): a 700-job board with content is ~10 MB
 IMPERSONATE = "chrome"
-JSON_HEADERS = {"accept": "application/json", "accept-language": "en-US,en;q=0.9"}
+JSON_HEADERS = {"accept": "application/json", "accept-language": egress.site_accept_language("greenhouse")}
 PAGE_HEADERS = {"accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "accept-language": "en-US,en;q=0.9"}
+                "accept-language": egress.site_accept_language("greenhouse")}
 _FOR_RE = re.compile(r"[?&]for=([A-Za-z0-9_-]+)")
 
 
@@ -73,14 +75,7 @@ class GreenhouseNotFound(NotFound):
 
 def dump_debug(name, text):
     """Write a raw response to $GREENHOUSE_DEBUG_DIR/<name>.txt."""
-    dbg = os.environ.get("GREENHOUSE_DEBUG_DIR", "")
-    if dbg and text:
-        try:
-            os.makedirs(dbg, exist_ok=True)
-            with open(os.path.join(dbg, name + ".txt"), "w") as f:
-                f.write(text)
-        except OSError:
-            pass
+    debug.dump("GREENHOUSE_DEBUG_DIR", name, text)
 
 
 # ---- curl sessions (per thread, keyed by exit) -------------------------------------------
@@ -89,10 +84,7 @@ _local = threading.local()
 
 
 def _sessions():
-    store = getattr(_local, "sessions", None)
-    if store is None:
-        store = _local.sessions = OrderedDict()
-    return store
+    return sessions.thread_store(_local)
 
 
 def _session(key, proxy):
@@ -116,12 +108,7 @@ def _session(key, proxy):
 
 
 def _drop_session(key):
-    sess = _sessions().pop(key, None)
-    if sess is not None:
-        try:
-            sess.close()
-        except Exception:
-            pass
+    sessions.drop_keyed(_sessions(), key)
 
 
 # ---- Job Board API ----------------------------------------------------------------------------
@@ -142,7 +129,7 @@ def _classify_api(status, text, label, not_found):
     if status >= 500:
         raise GreenhouseUpstreamError(f"HTTP {status} from boards-api.greenhouse.io on {label}")
     try:
-        body = json.loads(text or "")
+        body = fastjson.loads(text or "")
     except ValueError:
         dump_debug("api_non_json", text)
         raise GreenhouseUpstreamError(f"non-JSON answer (HTTP {status}) on {label}")
@@ -220,53 +207,9 @@ def board_of_job(job_id):
 
 # ---- company careers pages (board discovery) ----------------------------------------------------
 
-_browser_slots = threading.BoundedSemaphore(2)
-
-
-def _browser_page(url, label):
-    """One headful patchright Chrome: load the page, click Turnstile when
-    shown, return the rendered HTML once the challenge is gone."""
-    try:
-        from chrome_manager import create_scope
-        from patchright_driver import PatchrightDriver
-    except ImportError:
-        raise GreenhouseBlocked(f"Cloudflare challenge on {label} (no browser available for the fallback)")
-
-    driver = None
-    with _browser_slots:
-        try:
-            with create_scope():
-                driver = PatchrightDriver(proxy_url=config.greenhouse_page_proxy(), headless=False,
-                                          geoip_timezone=True)
-            driver.call(lambda page: page.goto(url, wait_until="domcontentloaded", timeout=60000))
-            deadline = time.monotonic() + float(config.GREENHOUSE_PAGE_BROWSER_TIMEOUT)
-            last_click = 0.0
-            while time.monotonic() < deadline:
-                try:
-                    html = driver.content() or ""
-                except Exception:
-                    html = ""
-                if html and not is_challenged(403, {}, html):
-                    return html
-                if time.monotonic() - last_click > 6:
-                    try:
-                        if driver.call(click_turnstile):
-                            last_click = time.monotonic()
-                    except Exception:
-                        pass
-                time.sleep(1.0)
-            raise GreenhouseBlocked(f"Cloudflare challenge did not clear in a browser on {label}")
-        finally:
-            if driver is not None:
-                try:
-                    driver.close()
-                except Exception:
-                    pass
-
-
 def page(url, label=None):
     """GET a company web page -> (final_url, HTML). 404 -> GreenhouseNotFound;
-    a Cloudflare challenge -> the browser fallback, else GreenhouseBlocked."""
+    a Cloudflare challenge -> GreenhouseBlocked."""
     label = label or url
     proxy = config.greenhouse_page_proxy()
     key = f"page:{proxy or 'direct'}"
@@ -284,10 +227,7 @@ def page(url, label=None):
             raise GreenhouseUpstreamError(f"HTTP {status} on {label}")
         return final, text
     _drop_session(key)
-    if not config.GREENHOUSE_PAGE_BROWSER_FALLBACK:
-        raise GreenhouseBlocked(f"Cloudflare challenge on {label}")
-    print(f"greenhouse: {label} is Cloudflare-challenged; trying a browser")
-    return url, _browser_page(url, label)
+    raise GreenhouseBlocked(f"Cloudflare challenge on {label}")
 
 
 # ---- shared raw payloads ------------------------------------------------------------------------
